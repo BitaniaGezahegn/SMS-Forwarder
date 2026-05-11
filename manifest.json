@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "SMS Forwarder to Telegram",
+  "version": "1.0",
+  "description": "Forwards SMS/MMS from a specific Google Messages contact to a Telegram channel.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "*://messages.google.com/web/*",
+    "https://api.telegram.org/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://messages.google.com/web/*"
+      ],
+      "js": [
+        "config.js",
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Configure SMS Forwarder"
+  },
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}
