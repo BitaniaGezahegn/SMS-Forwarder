@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const targetContactInput = document.getElementById('targetContact');
   const batchTxIdInput = document.getElementById('batchTxId');
   const startForwardingBtn = document.getElementById('startForwardingBtn');
+  const singleForwardBtn = document.getElementById('singleForwardBtn');
   const saveBtn = document.getElementById('saveBtn');
   const statusDiv = document.getElementById('status');
   const testBtn = document.getElementById('testBtn');
@@ -89,7 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tabs[0]) {
         chrome.tabs.sendMessage(tabs[0].id, { type: "BATCH_FORWARD_FROM_TX", txId: txId }, (response) => {
           startForwardingBtn.disabled = false;
-          startForwardingBtn.innerText = "Start Forwarding";
+          startForwardingBtn.innerText = "Batch Forward";
           
           if (chrome.runtime.lastError) {
              showStatus("Error: Could not reach Google Messages tab. Please refresh it.", true);
@@ -101,7 +102,39 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       } else {
         startForwardingBtn.disabled = false;
-        startForwardingBtn.innerText = "Start Forwarding";
+        startForwardingBtn.innerText = "Batch Forward";
+        showStatus("Please open Google Messages to use this.", true);
+      }
+    });
+  });
+
+  singleForwardBtn.addEventListener('click', () => {
+    const txId = batchTxIdInput.value.trim();
+    if (!txId) {
+      showStatus('Please enter a Transaction ID.', true);
+      return;
+    }
+    
+    singleForwardBtn.disabled = true;
+    singleForwardBtn.innerText = "Sending...";
+    
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "SINGLE_FORWARD_TX", txId: txId }, (response) => {
+          singleForwardBtn.disabled = false;
+          singleForwardBtn.innerText = "Single TX";
+          
+          if (chrome.runtime.lastError) {
+             showStatus("Error: Could not reach Google Messages tab. Please refresh it.", true);
+          } else if (response && response.success) {
+             showStatus(`Successfully forwarded 1 message!`);
+          } else {
+             showStatus(`Could not find Transaction ID ${txId} on the screen.`, true);
+          }
+        });
+      } else {
+        singleForwardBtn.disabled = false;
+        singleForwardBtn.innerText = "Single TX";
         showStatus("Please open Google Messages to use this.", true);
       }
     });

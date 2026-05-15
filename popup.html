@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,13 +8,17 @@
   <link rel="stylesheet" href="popup.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
+
 <body>
   <div class="container">
     <div class="header">
-      <svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
       <h1>SMS Forwarder</h1>
     </div>
-    
+
     <div class="form-group">
       <label for="botToken">Telegram Bot Token</label>
       <input type="password" id="botToken" placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz" autocomplete="off">
@@ -31,11 +36,15 @@
       <div class="help-text">Exact match for the chat header name in Google Messages.</div>
     </div>
 
-    <div class="form-group advanced-section" style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
-      <label for="batchTxId" style="color: var(--primary);">Manual Batch Forward</label>
+    <div class="form-group advanced-section"
+      style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+      <label for="batchTxId" style="color: var(--primary);">Manual Forward</label>
       <input type="text" id="batchTxId" placeholder="e.g. 801884529773">
-      <div class="help-text">Enter a Transaction ID and click Start Forwarding. It will forward this transaction and all messages after it.</div>
-      <button id="startForwardingBtn" class="secondary" style="margin-top: 8px;">Start Forwarding</button>
+      <div class="help-text">Enter a Transaction ID. Choose Batch (this and all newer) or Single (only this).</div>
+      <div style="display: flex; gap: 8px; margin-top: 8px;">
+        <button id="startForwardingBtn" class="secondary" style="flex: 1;">Batch Forward</button>
+        <button id="singleForwardBtn" class="secondary" style="flex: 1;">Single TX</button>
+      </div>
     </div>
 
     <div class="button-group">
@@ -53,4 +62,5 @@
   </div>
   <script src="popup.js"></script>
 </body>
+
 </html>

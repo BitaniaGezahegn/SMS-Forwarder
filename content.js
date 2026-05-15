@@ -17,6 +17,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleBatchForward(request.txId, sendResponse);
     return true; // keep alive for async
   }
+  if (request.type === "SINGLE_FORWARD_TX") {
+    handleSingleForward(request.txId, sendResponse);
+    return true; // keep alive for async
+  }
 });
 
 function handleBatchForward(targetTxId, sendResponse) {
@@ -84,6 +88,38 @@ function handleBatchForward(targetTxId, sendResponse) {
      
      processNext();
      sendResponse({ success: true, count: total });
+  } else {
+     UI.setStatus(`Could not find TX: ${targetTxId}`, 'error');
+     setTimeout(() => {
+        UI.setStatus('Listening for new messages...', 'waiting');
+     }, 3000);
+     sendResponse({ success: false, count: 0 });
+  }
+}
+
+function handleSingleForward(targetTxId, sendResponse) {
+  console.log(`[DEBUG] Received single forward request for TX: ${targetTxId}`);
+  const wrappers = Array.from(document.querySelectorAll(Selectors.messageWrapperSelector));
+  let foundEl = null;
+
+  for (let i = wrappers.length - 1; i >= 0; i--) {
+     const msgEl = wrappers[i];
+     const textEl = msgEl.querySelector(Selectors.messageTextSelector);
+     const text = textEl ? textEl.innerText.trim() : "";
+     
+     if (text.includes(targetTxId)) {
+        foundEl = msgEl;
+        break;
+     }
+  }
+
+  if (foundEl) {
+     UI.setStatus(`Forwarding Single TX: ${targetTxId}...`, 'active');
+     processNewMessage(foundEl, true, true); // bypass checks, skip default UI
+     setTimeout(() => {
+        UI.setStatus('Single TX forwarded. Listening...', 'waiting');
+     }, 3000);
+     sendResponse({ success: true, count: 1 });
   } else {
      UI.setStatus(`Could not find TX: ${targetTxId}`, 'error');
      setTimeout(() => {
@@ -199,11 +235,18 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 });
 
 function getActiveChatName() {
-  const headerEls = document.querySelectorAll(Selectors.chatHeaderSelector);
+  const headerEls = document.querySelectorAll(Selectors.chatHeaderSelector + ', h1, h2, h3, .name, [data-e2e-conversation-name], mws-conversation-header span');
   for (const el of headerEls) {
-    if (el.innerText && el.innerText.trim()) {
-      return el.innerText.trim();
+    if (el.innerText && el.innerText.trim() && !el.innerText.includes('Google Messages')) {
+      const text = el.innerText.trim();
+      if (text.length > 0 && text.length < 50) return text;
     }
+  }
+  
+  // Highly reliable fallback for Google Messages:
+  if (document.title) {
+      let title = document.title.replace("- Google Messages", "").replace("Messages for web", "").trim();
+      if (title.length > 0) return title;
   }
   return "";
 }
@@ -251,10 +294,13 @@ function processNewMessage(node, isManualBatch = false, skipUI = false) {
   const targetDigits = targetContact.replace(/\D/g,'');
   const currentDigits = currentChatName.replace(/\D/g,'');
   const digitMatch = targetDigits.length > 0 && targetDigits === currentDigits;
+  const partialMatch = currentChatName.includes(targetContact) || targetContact.includes(currentChatName);
 
-  if (currentChatName !== targetContact && !digitMatch) {
-     console.log(`[DEBUG] Ignored message: Contact mismatch. Expected: '${targetContact}', Found: '${currentChatName}'`);
-     return;
+  if (!isManualBatch) {
+    if (currentChatName !== targetContact && !digitMatch && !partialMatch) {
+       console.log(`[DEBUG] Ignored message: Contact mismatch. Expected: '${targetContact}', Found: '${currentChatName}'`);
+       return;
+    }
   }
 
   // 4. Extract Text and Timestamp
@@ -365,8 +411,9 @@ function startObserver() {
       const targetDigits = targetContact ? targetContact.replace(/\D/g,'') : '';
       const currentDigits = currentChatName.replace(/\D/g,'');
       const digitMatch = targetDigits.length > 0 && targetDigits === currentDigits;
+      const partialMatch = currentChatName.includes(targetContact) || targetContact.includes(currentChatName) || currentChatName === "";
       
-      if (currentChatName === targetContact || digitMatch) {
+      if (currentChatName === targetContact || digitMatch || partialMatch) {
          const existingMessages = document.querySelectorAll(Selectors.messageWrapperSelector);
          if (existingMessages.length > 0) {
             console.log(`[DEBUG] Target chat loaded. Scanning ${existingMessages.length} existing messages...`);
