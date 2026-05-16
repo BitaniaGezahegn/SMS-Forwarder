@@ -7,6 +7,8 @@ let originalTargetContact = null;
 let recentMessageHashes = new Set();
 let observer = null;
 let isReady = false;
+let lastSwitchClickTime = 0; // Cooldown for chat switching
+let isManualBatchMode = false; // Flag to prevent auto-nav during batch ops
 
 // Read config from injected window object (from config.js)
 const Selectors = window.SMSForwarderConfig;
@@ -14,11 +16,19 @@ const Selectors = window.SMSForwarderConfig;
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === "BATCH_FORWARD_FROM_TX") {
-    handleBatchForward(request.txId, sendResponse);
+    isManualBatchMode = true;
+    handleBatchForward(request.txId, (response) => {
+        isManualBatchMode = false;
+        sendResponse(response);
+    });
     return true; // keep alive for async
   }
   if (request.type === "SINGLE_FORWARD_TX") {
-    handleSingleForward(request.txId, sendResponse);
+    isManualBatchMode = true;
+    handleSingleForward(request.txId, (response) => {
+        isManualBatchMode = false;
+        sendResponse(response);
+    });
     return true; // keep alive for async
   }
 });
@@ -235,20 +245,180 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 });
 
 function getActiveChatName() {
-  const headerEls = document.querySelectorAll(Selectors.chatHeaderSelector + ', h1, h2, h3, .name, [data-e2e-conversation-name], mws-conversation-header span');
-  for (const el of headerEls) {
-    if (el.innerText && el.innerText.trim() && !el.innerText.includes('Google Messages')) {
-      const text = el.innerText.trim();
-      if (text.length > 0 && text.length < 50) return text;
+  console.log("[DEBUG] getActiveChatName: Searching for chat name...");
+  
+  // 1. Check sidebar for active/selected item (VERY reliable signal of intent)
+  const activeSidebarItem = document.querySelector(Selectors.activeConversationListItemSelector);
+  if (activeSidebarItem) {
+      // Try to find the name element specifically
+      const nameEl = activeSidebarItem.querySelector(Selectors.conversationNameSelector);
+      let name = nameEl?.innerText?.trim();
+      
+      // If no specific name element, try getting the first text-bearing child or title
+      if (!name) {
+          const allTexts = Array.from(activeSidebarItem.querySelectorAll('span, div, .name'))
+              .map(el => el.innerText.trim())
+              .filter(t => t && t.length > 0);
+          name = allTexts[0];
+      }
+
+      if (name) {
+          console.log(`[DEBUG] Selected name (Sidebar active): "${name}"`);
+          return name;
+      } else {
+          console.log("[DEBUG] Sidebar item found but no name extracted.");
+      }
+  } else {
+      console.log("[DEBUG] No active sidebar item found with current selectors.");
+  }
+
+  // 2. Try specialized selectors first (STRICTLY inside the header)
+  const headerContainer = document.querySelector('mws-conversation-header, .mws-top-bar, mws-top-bar');
+  if (headerContainer) {
+      const headerEls = headerContainer.querySelectorAll(Selectors.chatHeaderSelector);
+      for (const el of headerEls) {
+        const text = el.innerText?.trim();
+        if (text && !text.includes('Google Messages') && text.length > 0 && text.length < 60) {
+            // Final sanity check: skip generic app names
+            const lowered = text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+            if (lowered === 'messages' || lowered === 'conversations' || lowered === 'google messages' || lowered === 'google') continue;
+            
+            console.log(`[DEBUG] Selected name (Spec): "${text}"`);
+            return text;
+        }
+      }
+  }
+
+  // Fallback to searching all headings (STRICTLY inside the header)
+  const headings = document.querySelectorAll('h1, h2, h3, [role="heading"]');
+  for (const el of headings) {
+    const text = el.innerText?.trim();
+    if (text && !text.includes('Google Messages') && text.length > 0 && text.length < 60) {
+        const lowered = text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+        if (lowered === 'messages' || lowered === 'conversations' || lowered === 'google') continue;
+        
+        // Ensure it's in the conversation header area
+        if (el.closest('mws-conversation-header') || el.closest('.mws-top-bar')) {
+            console.log(`[DEBUG] Selected name (Heading): "${text}"`);
+            return text;
+        }
     }
   }
   
   // Highly reliable fallback for Google Messages:
   if (document.title) {
-      let title = document.title.replace("- Google Messages", "").replace("Messages for web", "").trim();
-      if (title.length > 0) return title;
+      console.log(`[DEBUG] Raw document title: "${document.title}"`);
+      let title = document.title
+          .replace("- Google Messages", "")
+          .replace("Messages for web", "")
+          .replace(/\(\d+\)/, "")
+          .replace(/[^\x20-\x7E]/g, '') // Strip non-printable/zero-width characters
+          .trim();
+      
+      // Aggressive keyword stripping for identifying generic titles
+      const loweredFull = title.toLowerCase();
+      if (loweredFull.includes('google messages') || 
+          loweredFull.includes('messages for web') || 
+          loweredFull.includes('conversations')) {
+          
+          let stripped = title
+              .replace(/google/gi, '')
+              .replace(/messages/gi, '')
+              .replace(/for web/gi, '')
+              .replace(/conversations/gi, '')
+              .replace(/[^\w\s]/g, '') // Strip punctuation
+              .trim();
+          
+          if (stripped.length === 0) {
+              console.log("[DEBUG] Title identified as generic (Conversations/Home view).");
+              return "";
+          }
+      }
+
+      const lowered = title.toLowerCase().replace(/[^\w\s]/g, '').trim();
+      const genericNames = ['google', 'messages', 'google messages', 'messages for web', 'conversations', 'web'];
+      
+      if (title.length > 0 && !genericNames.includes(lowered)) {
+          console.log(`[DEBUG] Selected name (Title fallback): "${title}"`);
+          return title;
+      }
   }
+  
+  console.log("[DEBUG] No valid chat name found.");
   return "";
+}
+
+function findAndSelectTargetChat() {
+    if (!targetContact || isManualBatchMode) return;
+    
+    // Cooldown check (don't try to switch again too soon)
+    if (Date.now() - lastSwitchClickTime < 3000) {
+        // Still waiting for previous click to take effect
+        return;
+    }
+
+    const currentName = getActiveChatName();
+    const isMatch = isTargetMatch(currentName, targetContact);
+    
+    console.log(`[DEBUG] findAndSelectTargetChat: Active: "${currentName}", Target: "${targetContact}", Match: ${isMatch}`);
+    
+    if (isMatch) return; // Already on it
+
+    console.log(`[DEBUG] findAndSelectTargetChat: No match. Searching sidebar...`);
+    
+    const listItems = document.querySelectorAll(Selectors.conversationListItemSelector);
+    for (const item of listItems) {
+        const nameEl = item.querySelector(Selectors.conversationNameSelector);
+        const name = nameEl?.innerText?.trim()?.toLowerCase() || "";
+        
+        if (isTargetMatch(name, targetContact)) {
+            console.log(`[DEBUG] Found target chat in sidebar: ${name}. Clicking to open.`);
+            
+            UI.setStatus(`Switching to ${originalTargetContact}...`, 'active');
+            lastSwitchClickTime = Date.now();
+
+            // More robust click: Google often listens for mousedown or specific sub-elements
+            const link = item.querySelector('a') || item;
+            link.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            link.click();
+            return true;
+        }
+    }
+    
+    // If not found in the immediate list, maybe it's further down or needs searching?
+    // For now, we just notify we can't find it.
+    UI.setStatus(`Target chat "${originalTargetContact}" not found.`, 'error');
+    return false;
+}
+
+function isTargetMatch(current, target) {
+    if (!current || !target) return false;
+    const c = current.toLowerCase().trim();
+    const t = target.toLowerCase().trim();
+    
+    console.log(`[DEBUG] isTargetMatch: Comparing "${c}" to "${t}"`);
+    
+    if (c === t) {
+        console.log("[DEBUG] isTargetMatch: Exact match!");
+        return true;
+    }
+    
+    // Numeric match (strip all non-digits)
+    const cDigits = c.replace(/\D/g, '');
+    const tDigits = t.replace(/\D/g, '');
+    if (tDigits.length >= 8 && cDigits === tDigits && tDigits.length > 0) {
+        console.log("[DEBUG] isTargetMatch: Numeric match!");
+        return true;
+    }
+    
+    // Partial match
+    if (c.includes(t) || t.includes(c)) {
+        console.log("[DEBUG] isTargetMatch: Partial match!");
+        return true;
+    }
+    
+    console.log("[DEBUG] isTargetMatch: No match.");
+    return false;
 }
 
 function generateHash(text, timestamp) {
@@ -395,58 +565,103 @@ function processNewMessage(node, isManualBatch = false, skipUI = false) {
 function startObserver() {
   if (observer) return; // Already running
 
-  console.log("SMS Forwarder: Starting observer for contact:", targetContact);
+  console.log("SMS Forwarder: Starting observers.");
   
   isReady = false;
-  UI.setStatus('Waiting for target chat to load...', 'waiting');
+  UI.setStatus('Initializing monitoring...', 'waiting');
 
-  let initialScanDone = false;
+  // Periodically check if we are on the right chat
+  const discoveryInterval = setInterval(() => {
+      if (!isManualBatchMode) findAndSelectTargetChat();
+  }, 10000);
+
   const targetNode = document.body;
   const config = { childList: true, subtree: true };
 
-  observer = new MutationObserver((mutationsList, observer) => {
-    // Detect when the target chat actually loads for the first time
-    if (!initialScanDone) {
-      const currentChatName = getActiveChatName().toLowerCase();
-      const targetDigits = targetContact ? targetContact.replace(/\D/g,'') : '';
-      const currentDigits = currentChatName.replace(/\D/g,'');
-      const digitMatch = targetDigits.length > 0 && targetDigits === currentDigits;
-      const partialMatch = currentChatName.includes(targetContact) || targetContact.includes(currentChatName) || currentChatName === "";
-      
-      if (currentChatName === targetContact || digitMatch || partialMatch) {
-         const existingMessages = document.querySelectorAll(Selectors.messageWrapperSelector);
-         if (existingMessages.length > 0) {
-            console.log(`[DEBUG] Target chat loaded. Scanning ${existingMessages.length} existing messages...`);
-            existingMessages.forEach(node => processNewMessage(node));
-            initialScanDone = true;
+  let lastActiveChat = "";
+
+  observer = new MutationObserver((mutationsList) => {
+    // 1. Monitor for chat changes/load
+    const currentChatName = getActiveChatName().toLowerCase();
+    if (currentChatName !== lastActiveChat) {
+        if (isTargetMatch(currentChatName, targetContact)) {
+            console.log(`[DEBUG] Switched to target chat: ${currentChatName}`);
+            UI.setStatus('Listening for new transactions...', 'waiting');
+            isReady = true;
             
-            // Give the DOM a brief moment to settle before listening for real new messages
-            setTimeout(() => {
-               isReady = true;
-               UI.setStatus('Listening for new transactions...', 'waiting');
-               console.log("SMS Forwarder: Initialization complete. Now listening.");
-            }, 1000);
-         }
-      }
+            // Scan existing messages immediately upon switching to target
+            const existingMessages = document.querySelectorAll(Selectors.messageWrapperSelector);
+            if (existingMessages.length > 0) {
+                console.log(`[DEBUG] Target chat active. Scanning ${existingMessages.length} existing messages...`);
+                existingMessages.forEach(node => processNewMessage(node));
+            }
+        } else if (lastActiveChat && isTargetMatch(lastActiveChat, targetContact)) {
+            console.log(`[DEBUG] Left target chat. Current: ${currentChatName}`);
+            isReady = false;
+            UI.setStatus('Target chat inactive. Scanning...', 'waiting');
+        }
+        lastActiveChat = currentChatName;
     }
 
     for (const mutation of mutationsList) {
       if (mutation.type === 'childList') {
         for (const node of mutation.addedNodes) {
-          processNewMessage(node);
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          
+          // Case A: A new message wrapper was added directly
+          if (node.matches && (node.matches(Selectors.messageWrapperSelector) || node.closest(Selectors.messageWrapperSelector))) {
+              processNewMessage(node);
+          } 
+          // Case B: A sidebar item was updated (might indicate a background message)
+          else if (node.matches && node.matches(Selectors.conversationListItemSelector)) {
+              checkSidebarItem(node);
+          }
+          // Case C: Search deeper in added subtree
+          else {
+              const msgs = node.querySelectorAll ? node.querySelectorAll(Selectors.messageWrapperSelector) : [];
+              msgs.forEach(m => processNewMessage(m));
+              
+              const sidebarItems = node.querySelectorAll ? node.querySelectorAll(Selectors.conversationListItemSelector) : [];
+              sidebarItems.forEach(si => checkSidebarItem(si));
+          }
         }
       }
     }
   });
 
   observer.observe(targetNode, config);
+  
+  // Store interval on observer for cleanup
+  observer.discoveryInterval = discoveryInterval;
+}
+
+function checkSidebarItem(item) {
+    if (!targetContact || isManualBatchMode || isReady) return; 
+    
+    // Cooldown check
+    if (Date.now() - lastSwitchClickTime < 3000) return;
+
+    const nameEl = item.querySelector(Selectors.conversationNameSelector);
+    const name = nameEl?.innerText?.trim()?.toLowerCase() || "";
+    
+    if (isTargetMatch(name, targetContact)) {
+        const unreadEl = item.querySelector(Selectors.unreadLineSelector);
+        if (unreadEl) {
+            console.log(`[DEBUG] New message detected in sidebar for target: ${name}. Opening chat...`);
+            lastSwitchClickTime = Date.now();
+            const link = item.querySelector('a') || item;
+            link.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            link.click();
+        }
+    }
 }
 
 function stopObserver() {
   if (observer) {
+    if (observer.discoveryInterval) clearInterval(observer.discoveryInterval);
     observer.disconnect();
     observer = null;
     isReady = false;
-    console.log("SMS Forwarder: Observer stopped.");
+    console.log("SMS Forwarder: Observers stopped.");
   }
 }
